@@ -49,6 +49,8 @@ forge test --match-contract ScenariosTest -vv
 | `test/Fuzz.t.sol` | T8 apportionment via the characterising inequality (`R * rhoDen <= B_G * rhoNum < (R + 1) * rhoDen`), T18 debit-order transition |
 | `test/Invariant.t.sol` | I1, I3, I4, ghost agreement, the T2 probe (snapshot → real entry point → revert), and handler-side checks for T5, T16, T18, I2 across six configurations |
 | `test/RhoSweep.t.sol` | T14 measurement, writes `results/rho_sweep.csv` |
+| `test/ReferenceAnchors.t.sol` | the Appendix A traces (T6, T7, T12, T13, T5/T11, T9, T17) replayed against `SpendPartitionReference` |
+| `test/Differential.t.sol` | both implementations driven through one call sequence and compared after every call, across five configurations |
 
 Seeds and campaign sizes live in `foundry.toml`: fuzz seed `0x5eed`, fuzz runs 1000 (256 for T8),
 invariant runs 64 × depth 128, `fail_on_revert = false` (a rejected payment is a valid outcome).
@@ -63,6 +65,36 @@ assumed. Write the header first:
 printf "n,budget,rho,accepted,accepted_with_spill,rejected,rollovers\n" > results/invariant_coverage.csv
 forge test --match-contract "Invariant_"
 ```
+
+## Differential harness
+
+`src/SpendPartitionReference.sol` is a second implementation of the same spec, organised for
+reading rather than for cost: state keyed by window id instead of epoch tags, a linear scan for the
+agent index, R and r_i recomputed from their definitions on every call, nothing packed. Structural
+choices are deliberately different so that a shared mistake has nowhere to hide.
+
+`SpendPartition` itself is not modified and does not inherit `ISpendPartition`; leaving that file
+untouched keeps its bytecode and the gas numbers above unchanged. The harness reaches both
+implementations by casting their addresses to the interface.
+
+```bash
+printf "n,budget,rho,calls,accepted,rejected,rollovers,stranger_calls,out_of_range_amounts\n" > results/differential_coverage.csv
+forge test --match-contract "Differential_"
+```
+
+Each handler call issues the same payment from the same caller to both implementations and compares
+the success flag; on rejection it also compares the raw return data, which is meaningful because
+both declare the same error signatures and therefore the same selectors. One caller in sixteen is an
+address that was never registered, and one amount in eight falls outside [1, B_G], so the guard
+paths are exercised too. After every call the invariant compares `currentWindowId`, `surplusUsed`,
+`reservedTotal`, `surplusCap`, every agent's `spentOf`, `reservationOf` and `indexOf`, and the token
+balance each implementation has paid out. Per-run counts land in
+`results/differential_coverage.csv`.
+
+To check that the harness can still fail, break the reference on purpose and rerun one
+configuration: in `SpendPartitionReference.pay`, replace the `fromReservation` line with
+`uint256 fromReservation = 0;` (surplus consumed before the reservation). The run reported
+`rejected by both, different revert data` within one campaign. Restore the line afterwards.
 
 ## Gas sweep
 
@@ -121,8 +153,7 @@ Foundry versions.
 
 ## Not implemented yet
 
-From the Layout v1.1 Part 7 checklist: the Reference fixture and the differential harness; the three
-mutation checks; the adversarial token mock with a reentrant `transfer` hook; H1's three surplus
+From the Layout v1.1 Part 7 checklist: the three mutation checks; the adversarial token mock with a reentrant `transfer` hook; H1's three surplus
 `SSTORE` regimes measured separately (only first-ever and later-same-window appear here, not
 first-after-rollover); H4 hybrid spill-rate interpolation; H6 Optimized vs Reference; the batched
 vs unbatched appendix microbenchmark; the dashboard.
