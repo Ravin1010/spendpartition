@@ -53,6 +53,7 @@ forge test --match-contract ScenariosTest -vv
 | `test/Differential.t.sol` | both implementations driven through one call sequence and compared after every call, across five configurations |
 | `test/Mutation.t.sol` | the four mutants in `test/mutants/` run against the named checks, with the resulting kill matrix printed |
 | `test/AdversarialToken.t.sol` | tokens that call back during the transfer, revert, or return false |
+| `test/DemoTrace.t.sol` | replays the six demo acts against the contract and writes `results/demo_trace.csv` |
 
 Seeds and campaign sizes live in `foundry.toml`: fuzz seed `0x5eed`, fuzz runs 1000 (256 for T8),
 invariant runs 64 × depth 128, `fail_on_revert = false` (a rejected payment is a valid outcome).
@@ -208,6 +209,26 @@ about 17,100 more than one that has. A first write after a rollover costs the sa
 write in a window, because both overwrite a non-zero slot. Payment cost on the optimised contract
 does not move with N, while the reference grows with it; deployment is the other way round
 (735,201 against 800,128 at N=2, 2,168,269 against 1,998,732 at N=50).
+
+## Demo trace
+
+The six acts of the demo are produced by calling the contract, not by reimplementing the rules in a
+front end:
+
+```bash
+forge test --match-contract DemoTraceTest
+```
+
+`results/demo_trace.csv` gets one row per request, with the state read back after the call:
+
+| act | what it shows |
+|---|---|
+| 1 | two caps of 80 against an intended aggregate of 100: both payments pass, 160 leaves |
+| 2 | a static 50/50 split: A's request for 80 is refused while half the budget sits idle |
+| 3 | a shared pool serves the same 80 |
+| 4 | the first mover takes all 100 and B's 20 is refused |
+| 5 | rho = 1/2: A is capped at 75 and B's 25 is still served, ending at exactly 100 |
+| 6 | the rho sweep in `results/rho_sweep.csv` |
 
 ## Reference outputs
 
