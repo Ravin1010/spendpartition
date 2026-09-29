@@ -6,6 +6,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SpendPartition} from "../src/SpendPartition.sol";
 import {SpendPartitionReference} from "../src/SpendPartitionReference.sol";
 import {MockUSDC} from "../test/mocks/MockUSDC.sol";
+import {BatchDelegate} from "../test/mocks/BatchDelegate.sol";
+import {ISpendPartition} from "../src/ISpendPartition.sol";
 
 /// Gas sweep over N (Layout v1.1 H2/H7 matrix) and rho in {0, 1/2, 1}.
 /// Every deployment and every payment is its own broadcast transaction, so storage warmth
@@ -60,6 +62,10 @@ contract GasSweep is Script {
         // Phase 4: payments that straddle the reservation boundary.
         _runSpillConfig(usdc, deployerKey, 2);
         _runSpillConfig(usdc, deployerKey, 10);
+
+        // Phase 5: k payments in one transaction against the same k as separate transactions.
+        _runBatchConfig(usdc, deployerKey, 0);
+        _runBatchConfig(usdc, deployerKey, 2);
     }
 
     function _runConfig(MockUSDC usdc, uint256 deployerKey, uint256 n, uint256 rhoNum, uint256 window) internal {
@@ -142,6 +148,43 @@ contract GasSweep is Script {
 
         vm.broadcast(keys[n - 1]);
         sp.pay(MERCHANT, AMOUNT); // entirely from the surplus now
+    }
+
+    /// N = 10, one delegate being a contract that loops over pay(). Each k is measured twice: once
+    /// as a single transaction issuing k payments, once as k transactions issuing one payment each.
+    /// A warm-up payment runs first so that the contract's first surplus write, which is the only
+    /// zero-to-non-zero write it ever does, does not land inside a measured group.
+    function _runBatchConfig(MockUSDC usdc, uint256 deployerKey, uint256 rhoNum) internal {
+        uint256 n = 10;
+        (address[] memory eoas, uint256[] memory keys) = _delegates(n);
+
+        vm.broadcast(deployerKey);
+        BatchDelegate batcher = new BatchDelegate();
+
+        address[] memory agents = new address[](n);
+        agents[0] = address(batcher);
+        for (uint256 i = 1; i < n; ++i) {
+            agents[i] = eoas[i];
+        }
+
+        vm.startBroadcast(deployerKey);
+        SpendPartition sp = new SpendPartition(IERC20(address(usdc)), agents, BUDGET, rhoNum, 2, WINDOW);
+        usdc.mint(address(sp), BUDGET);
+        vm.stopBroadcast();
+
+        vm.broadcast(keys[1]);
+        sp.pay(MERCHANT, AMOUNT); // warm-up
+
+        uint256[5] memory ks = [uint256(1), 2, 4, 8, 16];
+        for (uint256 j = 0; j < ks.length; ++j) {
+            vm.broadcast(keys[0]);
+            batcher.payMany(ISpendPartition(address(sp)), MERCHANT, AMOUNT, ks[j]);
+
+            for (uint256 i = 0; i < ks[j]; ++i) {
+                vm.broadcast(keys[1]);
+                sp.pay(MERCHANT, AMOUNT);
+            }
+        }
     }
 
     function _delegates(uint256 n) internal returns (address[] memory agents, uint256[] memory keys) {

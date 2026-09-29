@@ -210,6 +210,28 @@ write in a window, because both overwrite a non-zero slot. Payment cost on the o
 does not move with N, while the reference grows with it; deployment is the other way round
 (735,201 against 800,128 at N=2, 2,168,269 against 1,998,732 at N=50).
 
+## Batching microbenchmark
+
+Phase 5 of the sweep registers a delegate that is a contract and has it issue k payments inside one
+transaction, then sends the same k payments as k separate transactions. A warm-up payment runs first
+so the contract's only zero-to-non-zero surplus write does not land inside a measured group.
+Results go to `results/batching.csv`; measured on 2026-09-30, N = 10:
+
+| rho | k | batched, 1 tx | separate, k tx | per payment, batched | per payment, separate |
+|---|---|---|---|---|---|
+| 0 | 1 | 56,529 | 52,637 | 56,529 | 52,637 |
+| 0 | 4 | 86,499 | 210,548 | 21,625 | 52,637 |
+| 0 | 16 | 206,379 | 842,192 | 12,899 | 52,637 |
+| 1 | 1 | 51,015 | 47,123 | 51,015 | 47,123 |
+| 1 | 4 | 78,843 | 188,492 | 19,711 | 47,123 |
+| 1 | 16 | 190,155 | 753,968 | 11,885 | 47,123 |
+
+At k = 1 batching costs more, because of the extra call frame and its calldata. From k = 2 the two
+per-transaction costs that do not repeat inside a batch take over: the 21,000 intrinsic cost, and the
+cold-access surcharge on every account and slot the payment touches, which is paid once per
+transaction rather than once per payment. The marginal cost of one more payment inside a batch is
+about 9,990 gas at rho = 0 and 9,276 at rho = 1, against 52,637 and 47,123 standalone.
+
 ## Demo trace
 
 The six acts of the demo are produced by calling the contract, not by reimplementing the rules in a
@@ -287,7 +309,12 @@ Foundry versions.
 
 ## Not implemented yet
 
-From the Layout v1.1 Part 7 checklist: the batched vs unbatched appendix microbenchmark.
+The Layout v1.1 Part 7 checklist is closed: reference implementation and differential harness,
+mutation checks, adversarial token mocks, the three surplus write regimes, the hybrid spill case,
+optimised against reference, the batching microbenchmark, and the dashboard are all in the tree.
+What remains is out of scope by the spec rather than pending: configuration is fixed per deployment,
+so there is no mutation path for the delegate set, B_G, rho or the window; one token per deployment;
+no borrowing against a future window.
 
 ## Failure modes seen so far
 

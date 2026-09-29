@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BROADCAST_DIR = ROOT / "broadcast" / "GasSweep.s.sol" / "31337"
 OUT_CSV = ROOT / "results" / "gas_sweep.csv"
+OUT_BATCH = ROOT / "results" / "batching.csv"
 OUT_PNG = ROOT / "results" / "gas_vs_N.png"
 OUT_PNG_REGIMES = ROOT / "results" / "gas_regimes.png"
 
@@ -68,8 +69,25 @@ def main() -> None:
             seen.add(tx["hash"].lower())
             transactions.append(tx)
 
+    # First pass: find the batching phase. A BatchDelegate is created, and the contract it pays into
+    # is measured separately, so its rows stay out of the N sweep.
+    batchers = {
+        tx["contractAddress"].lower()
+        for tx in transactions
+        if tx["transactionType"] == "CREATE" and tx.get("contractName") == "BatchDelegate"
+    }
+    batch_targets = set()
+    for tx in transactions:
+        to = (tx["transaction"].get("to") or "").lower()
+        if to in batchers:
+            for log in receipts[tx["hash"].lower()]["logs"]:
+                if log["topics"][0].lower() == paid_topic:
+                    batch_targets.add(log["address"].lower())
+
     configs = {}
     rows = []
+    batch_rows = []
+    pending = None  # the separate-transaction baseline that follows each batched transaction
     for tx in transactions:
         h = tx["hash"].lower()
         rc = receipts[h]
@@ -82,6 +100,11 @@ def main() -> None:
             args = tx["arguments"]
             agents = _addresses(args[1])
             addr = tx["contractAddress"].lower()
+            if addr in batch_targets:
+                configs[addr] = {"impl": IMPLS[name], "n": len(_addresses(args[1])),
+                                 "rho": str(Fraction(int(args[3]), int(args[4]))), "window_s": int(args[5]),
+                                 "agents": _addresses(args[1]), "pays": 0, "surplus_window": None, "payer_window": {}}
+                continue
             configs[addr] = {
                 "impl": IMPLS[name],
                 "n": len(agents),
@@ -103,6 +126,30 @@ def main() -> None:
             continue
 
         to = (tx["transaction"].get("to") or "").lower()
+
+        if tx["transactionType"] == "CALL" and to in batchers:
+            paid = [l for l in rc["logs"] if l["topics"][0].lower() == paid_topic]
+            target = paid[0]["address"].lower()
+            cfg = configs[target]
+            batch_rows.append(
+                {"rho": cfg["rho"], "n": cfg["n"], "k": len(paid), "mode": "batched",
+                 "transactions": 1, "total_gas": gas, "gas_per_payment": round(gas / len(paid), 1)}
+            )
+            pending = {"rho": cfg["rho"], "n": cfg["n"], "k": len(paid), "mode": "separate",
+                       "transactions": 0, "total_gas": 0, "target": target}
+            continue
+
+        if tx["transactionType"] == "CALL" and to in batch_targets and (tx.get("function") or "").startswith("pay("):
+            if pending is not None and pending["target"] == to and pending["transactions"] < pending["k"]:
+                pending["transactions"] += 1
+                pending["total_gas"] += gas
+                if pending["transactions"] == pending["k"]:
+                    pending["gas_per_payment"] = round(pending["total_gas"] / pending["k"], 1)
+                    pending.pop("target")
+                    batch_rows.append(pending)
+                    pending = None
+            continue
+
         if tx["transactionType"] == "CALL" and to in configs and (tx.get("function") or "").startswith("pay("):
             cfg = configs[to]
             payer = tx["transaction"]["from"].lower()
@@ -191,6 +238,23 @@ def main() -> None:
                 per_n.setdefault(r["n"], []).append(r["gas_used"])
         cells = "".join(f"{int(statistics.median(per_n[n])):>11}" if n in per_n else f"{'-':>11}" for n in ns)
         print(f"{impl:<24}{cells}")
+    if batch_rows:
+        with OUT_BATCH.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(batch_rows[0].keys()), lineterminator="\n")
+            w.writeheader()
+            w.writerows(batch_rows)
+        print(f"\n{'rho':<6}{'k':>4}{'batched, 1 tx':>16}{'separate, k tx':>16}{'per payment, batched':>22}{'per payment, separate':>23}")
+        by = {}
+        for r in batch_rows:
+            by.setdefault((r["rho"], r["k"]), {})[r["mode"]] = r
+        for (rho, k) in sorted(by, key=lambda t: (t[0], t[1])):
+            pair = by[(rho, k)]
+            if len(pair) != 2:
+                continue
+            b, sep = pair["batched"], pair["separate"]
+            print(f"{rho:<6}{k:>4}{b['total_gas']:>16,}{sep['total_gas']:>16,}"
+                  f"{b['gas_per_payment']:>22,.1f}{sep['gas_per_payment']:>23,.1f}")
+
     print(f"\nwrote {OUT_CSV.relative_to(ROOT)}")
 
     # ---- figures ------------------------------------------------------------------------
