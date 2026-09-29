@@ -51,6 +51,7 @@ forge test --match-contract ScenariosTest -vv
 | `test/RhoSweep.t.sol` | T14 measurement, writes `results/rho_sweep.csv` |
 | `test/ReferenceAnchors.t.sol` | the Appendix A traces (T6, T7, T12, T13, T5/T11, T9, T17) replayed against `SpendPartitionReference` |
 | `test/Differential.t.sol` | both implementations driven through one call sequence and compared after every call, across five configurations |
+| `test/Mutation.t.sol` | the three mutants in `test/mutants/` run against the named checks, with the resulting kill matrix printed |
 
 Seeds and campaign sizes live in `foundry.toml`: fuzz seed `0x5eed`, fuzz runs 1000 (256 for T8),
 invariant runs 64 × depth 128, `fail_on_revert = false` (a rejected payment is a valid outcome).
@@ -95,6 +96,38 @@ To check that the harness can still fail, break the reference on purpose and rer
 configuration: in `SpendPartitionReference.pay`, replace the `fromReservation` line with
 `uint256 fromReservation = 0;` (surplus consumed before the reservation). The run reported
 `rejected by both, different revert data` within one campaign. Restore the line afterwards.
+
+## Mutation checks
+
+`test/mutants/` holds three copies of the optimised contract, each generated from
+`src/SpendPartition.sol` with one behaviour changed and the change marked by a `MUTATION` comment:
+
+| Mutant | Change |
+|---|---|
+| `MutantM1DebitOrder` | the shared surplus is consumed before the delegate's own reservation |
+| `MutantM2NoWindowTag` | the window tag comparison is dropped on the payment path, so stored values are used as is |
+| `MutantM3PartialFill` | a payment that exceeds the remaining surplus is filled partially instead of refused |
+
+```bash
+forge test --match-contract MutationTest -vv
+```
+
+The five checks are the named properties the suite already tests, rewritten to return a boolean so
+a failure is recorded rather than aborting the run. The test asserts that every check holds on the
+real contract and that no mutant survives all of them, and prints the matrix:
+
+```
+check                 SpendPartition  M1  M2  M3   (1 = property held)
+T6 apportionment            1         1   1   0
+T18 debit order             1         0   1   1
+T5/T9 window reset          1         1   0   1
+T12 ordering                1         1   1   0
+T16 atomicity               1         1   1   0
+```
+
+Each mutant is caught, and M1 and M2 are each caught by exactly one check: removing the T18 or the
+T5/T9 property would let that mutant through. To see how far a mutant is from the original,
+`diff src/SpendPartition.sol test/mutants/MutantM2NoWindowTag.sol`.
 
 ## Gas sweep
 
@@ -153,7 +186,7 @@ Foundry versions.
 
 ## Not implemented yet
 
-From the Layout v1.1 Part 7 checklist: the three mutation checks; the adversarial token mock with a reentrant `transfer` hook; H1's three surplus
+From the Layout v1.1 Part 7 checklist: the adversarial token mock with a reentrant `transfer` hook; H1's three surplus
 `SSTORE` regimes measured separately (only first-ever and later-same-window appear here, not
 first-after-rollover); H4 hybrid spill-rate interpolation; H6 Optimized vs Reference; the batched
 vs unbatched appendix microbenchmark; the dashboard.
