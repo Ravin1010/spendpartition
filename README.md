@@ -230,6 +230,21 @@ forge test --match-contract DemoTraceTest
 | 5 | rho = 1/2: A is capped at 75 and B's 25 is still served, ending at exactly 100 |
 | 6 | the rho sweep in `results/rho_sweep.csv` |
 
+## Dashboard
+
+```bash
+forge test --match-contract "DemoTraceTest|RhoSweepTest"   # writes demo_trace.csv and rho_sweep.csv
+./run_gas_sweep.sh                                          # writes gas_sweep.csv
+python3 analysis/build_dashboard.py                         # writes results/dashboard.html
+```
+
+`analysis/build_dashboard.py` inlines the three CSVs into `analysis/dashboard_template.html` and
+writes one self-contained file, so the page opens from the file system and can be sent as a single
+attachment. It shows the six acts as tabs, a slider over the rho sweep, and the per-payment gas table
+with a curve against N. The front end only renders: every number was read back from a contract call
+or taken from a transaction receipt, and none of the rules are reimplemented in JavaScript. Rebuild
+it whenever the CSVs change.
+
 ## Reference outputs
 
 `results/container_2026-09-30/` holds a full run (environment in `env.txt`): 52 tests passed,
@@ -272,8 +287,7 @@ Foundry versions.
 
 ## Not implemented yet
 
-From the Layout v1.1 Part 7 checklist: the batched vs unbatched appendix microbenchmark and the
-dashboard.
+From the Layout v1.1 Part 7 checklist: the batched vs unbatched appendix microbenchmark.
 
 ## Failure modes seen so far
 

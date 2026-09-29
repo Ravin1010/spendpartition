@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SpendPartition — measured behaviour</title>
+<style>
+  :root {
+    --fg: #16181d; --muted: #5d6470; --line: #d5d9e0; --bg: #ffffff; --panel: #f7f8fa;
+    --a: #3465a4; --b: #b5651d; --c: #4c7a34; --refused: #a33; --grid: #e6e9ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+    --fg: #e7e9ee; --muted: #9aa3b0; --line: #333a45; --bg: #14161a; --panel: #1b1e24;
+    --a: #7aa7e0; --b: #e0a06a; --c: #8fc070; --refused: #e07a7a; --grid: #262b33;
+    }
+  }
+  :root[data-theme="dark"] {
+    --fg: #e7e9ee; --muted: #9aa3b0; --line: #333a45; --bg: #14161a; --panel: #1b1e24;
+    --a: #7aa7e0; --b: #e0a06a; --c: #8fc070; --refused: #e07a7a; --grid: #262b33;
+  }
+  * { box-sizing: border-box; }
+  :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--fg);
+         font: 13px/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  h2 { font-size: 14px; margin: 22px 0 8px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .tab { padding: 6px 12px; border: 1px solid var(--line); border-bottom: none; background: var(--panel);
+         cursor: pointer; font-size: 12px; color: var(--muted); }
+  .tab[aria-selected="true"] { background: var(--bg); color: var(--fg); font-weight: 600;
+         box-shadow: inset 0 2px 0 var(--a); }
+  .cols { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(300px, 420px); gap: 26px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .ok { color: var(--c); } .no { color: var(--refused); }
+  .note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .slider { display: flex; align-items: center; gap: 12px; margin: 6px 0 14px; }
+  input[type=range] { width: 260px; }
+  .rho { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 54px; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: 10px; }
+  svg text { fill: var(--muted); font-size: 10px; }
+</style>
+</head>
+<body>
+<h1>SpendPartition — measured behaviour</h1>
+<div class="sub" id="provenance"></div>
+
+<div class="tabs" id="tabs"></div>
+<div id="panel"></div>
+
+<h2>Cost</h2>
+<div class="cols">
+  <div id="gasChart"></div>
+  <div id="gasTable"></div>
+</div>
+
+<footer id="footer"></footer>
+
+<script>
+const DATA = /*__DATA__*/;
+
+const ACTS = {
+  1: {title: "Per-delegation caps", note: "Two delegations capped at 80 each while the principal intended 100 in aggregate. Every payment is inside its own cap."},
+  2: {title: "Static split", note: "The same intended 100, split 50/50 up front. Nothing can overshoot, and nothing can be reallocated either."},
+  3: {title: "Shared pool", note: "The same request against one shared budget with no per-delegate floor."},
+  4: {title: "Shared pool, contested", note: "Same configuration, different arrival order: the first mover consumes the pool."},
+  5: {title: "Reservation plus surplus", note: "rho = 1/2: each delegate holds 25, the other 50 is shared."},
+  6: {title: "rho sweep", note: "One fixed workload replayed for rho = 0 to 1. A submits ten requests of 10 first, then B and C submit three each."}
+};
+
+const fmt = n => n.toLocaleString("en-US");
+const median = xs => { const s = [...xs].sort((a,b)=>a-b); const m = s.length>>1;
+  return s.length % 2 ? s[m] : (s[m-1]+s[m])/2; };
+
+/* ---------- acts 1-5 ---------- */
+function renderAct(act) {
+  const rows = DATA.demo.filter(r => +r.act === act);
+  if (!rows.length) return `<p class="note">results/demo_trace.csv has no rows for act ${act}.</p>`;
+  const budget = +rows[0].budget;
+  const rho = `${rows[0].rho_num}/${rows[0].rho_den}`;
+  const last = rows[rows.length - 1];
+  const intended = act === 1 ? 100 : budget;
+
+  const steps = rows.map(r => `<tr>
+      <td>${r.agent}</td><td>${fmt(+r.requested)}</td>
+      <td class="${+r.accepted ? "ok" : "no"}">${+r.accepted ? "accepted" : "refused"}</td>
+      <td>${fmt(+r.spent_a)}</td><td>${fmt(+r.spent_b)}</td>
+      <td>${fmt(+r.surplus_used)}</td><td>${fmt(+r.aggregate)}</td></tr>`).join("");
+
+  return `<div class="cols">
+    <div>
+      <table>
+        <thead><tr><th>delegate</th><th>requests</th><th>outcome</th><th>spent A</th><th>spent B</th><th>surplus used</th><th>aggregate</th></tr></thead>
+        <tbody>${steps}</tbody>
+      </table>
+      <p class="note">${ACTS[act].note}</p>
+    </div>
+    <div>
+      ${barChart(+last.spent_a, +last.spent_b, budget, intended)}
+      <table>
+        <tbody>
+          <tr><td>contract budget B_G</td><td>${fmt(budget)}</td></tr>
+          <tr><td>rho</td><td>${rho}</td></tr>
+          <tr><td>aggregate spent</td><td>${fmt(+last.aggregate)}</td></tr>
+          <tr><td>principal's intent</td><td>${fmt(intended)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function barChart(a, b, budget, intended) {
+  const W = 360, H = 120, left = 54, right = 12, top = 14, rowH = 26;
+  const max = Math.max(budget, intended, a + b, 1);
+  const scale = v => (W - left - right) * v / max;
+  const bar = (y, v, color, label) => `
+    <text x="${left - 8}" y="${y + 13}" text-anchor="end">${label}</text>
+    <rect x="${left}" y="${y}" width="${scale(v)}" height="18" fill="${color}"></rect>
+    <text x="${left + scale(v) + 6}" y="${y + 13}" text-anchor="start">${fmt(v)}</text>`;
+  const rule = (v, color, label, dash) => `
+    <line x1="${left + scale(v)}" y1="${top - 6}" x2="${left + scale(v)}" y2="${H - 22}"
+          stroke="${color}" stroke-width="1" stroke-dasharray="${dash}"></line>
+    <text x="${left + scale(v)}" y="${H - 8}" text-anchor="middle">${label}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img">
+    ${bar(top, a, "var(--a)", "A")}
+    ${bar(top + rowH, b, "var(--b)", "B")}
+    ${bar(top + 2 * rowH, a + b, "var(--muted)", "total")}
+    ${rule(intended, "var(--refused)", "intent " + fmt(intended), "4 3")}
+    ${budget !== intended ? rule(budget, "var(--line)", "B_G " + fmt(budget), "1 0") : ""}
+  </svg>`;
+}
+
+/* ---------- act 6 ---------- */
+function renderSweep() {
+  const ks = [...new Set(DATA.rho.map(r => +r.rho_num))].sort((x, y) => x - y);
+  return `<div class="cols">
+    <div>
+      <div class="slider">
+        <input type="range" id="rhoRange" min="0" max="${ks.length - 1}" step="1" value="5">
+        <span class="rho" id="rhoLabel"></span>
+      </div>
+      <div id="sweepBody"></div>
+      <p class="note">${ACTS[6].note}</p>
+    </div>
+    <div id="sweepChart"></div>
+  </div>`;
+}
+
+function drawSweep(k) {
+  const rows = DATA.rho.filter(r => +r.rho_num === k);
+  const den = rows.length ? +rows[0].rho_den : 10;
+  document.getElementById("rhoLabel").textContent = `rho = ${k}/${den}`;
+  const served = rows.reduce((s, r) => s + (+r.granted), 0);
+  document.getElementById("sweepBody").innerHTML = `
+    <table>
+      <thead><tr><th>delegate</th><th>role</th><th>reservation</th><th>demanded</th><th>granted</th><th>requests refused</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${r.agent}</td><td>${r.role.replace("_", " ")}</td>
+        <td>${fmt(+r.reservation)}</td><td>${fmt(+r.demanded)}</td><td>${fmt(+r.granted)}</td>
+        <td>${fmt(+r.rejected_requests)}</td></tr>`).join("")}
+        <tr><td colspan="4"><b>total served</b></td><td><b>${fmt(served)}</b></td><td></td></tr>
+      </tbody>
+    </table>`;
+
+  const W = 380, H = 150, left = 30, bottom = 26, top = 10;
+  const ks = [...new Set(DATA.rho.map(r => +r.rho_num))].sort((x, y) => x - y);
+  const colors = {A: "var(--a)", B: "var(--b)", C: "var(--c)"};
+  const bw = (W - left - 10) / ks.length;
+  let svg = "";
+  ks.forEach((kk, i) => {
+    const rs = DATA.rho.filter(r => +r.rho_num === kk);
+    let y = H - bottom;
+    rs.forEach(r => {
+      const h = (H - bottom - top) * (+r.granted) / 100;
+      y -= h;
+      svg += `<rect x="${left + i * bw + 2}" y="${y}" width="${bw - 4}" height="${h}"
+              fill="${colors[r.agent] || "var(--muted)"}" opacity="${kk === k ? 1 : .35}"></rect>`;
+    });
+    svg += `<text x="${left + i * bw + bw / 2}" y="${H - 10}" text-anchor="middle">${kk / 10}</text>`;
+  });
+  document.getElementById("sweepChart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">
+      <line x1="${left}" y1="${H - bottom}" x2="${W - 6}" y2="${H - bottom}" stroke="var(--line)"></line>
+      <text x="${left - 6}" y="${top + 8}" text-anchor="end">100</text>
+      <text x="${left - 6}" y="${H - bottom}" text-anchor="end">0</text>
+      ${svg}
+      <text x="${W / 2}" y="${H - 1}" text-anchor="middle">rho</text>
+    </svg>
+    <p class="note">Granted per delegate, stacked, for every rho in the sweep. A is the first mover.</p>`;
+}
+
+/* ---------- gas ---------- */
+function renderGas() {
+  const pays = DATA.gas.filter(r => r.event === "pay");
+  const keys = [...new Set(pays.map(r => `${r.impl}|${r.path}`))].sort();
+  const ns = [...new Set(DATA.gas.filter(r => r.window_s !== "1").map(r => +r.n))].sort((a, b) => a - b);
+
+  const cell = (key, n) => {
+    const [impl, path] = key.split("|");
+    const v = pays.filter(r => r.impl === impl && r.path === path && +r.n === n).map(r => +r.gas_used);
+    return v.length ? Math.round(median(v)) : null;
+  };
+  document.getElementById("gasTable").innerHTML = `<table>
+    <thead><tr><th>single payment</th>${ns.map(n => `<th>N=${n}</th>`).join("")}</tr></thead>
+    <tbody>${keys.map(key => `<tr><td>${key.split("|")[0]}, ${key.split("|")[1].replace(/_/g, " ")}</td>
+      ${ns.map(n => `<td>${cell(key, n) === null ? "&ndash;" : fmt(cell(key, n))}</td>`).join("")}</tr>`).join("")}
+    </tbody></table>
+    <p class="note">gasUsed from anvil receipts, one transaction per payment.</p>`;
+
+  const W = 400, H = 210, left = 56, bottom = 30, top = 12, right = 8;
+  const series = keys.map(key => ({key, pts: ns.map(n => [n, cell(key, n)]).filter(p => p[1] !== null)}))
+                     .filter(s => s.pts.length > 1);
+  const maxY = Math.max(...series.flatMap(s => s.pts.map(p => p[1])));
+  const x = n => left + (W - left - right) * (ns.indexOf(n)) / (ns.length - 1);
+  const y = v => H - bottom - (H - bottom - top) * v / maxY;
+  const palette = ["var(--a)", "var(--b)", "var(--c)", "var(--muted)", "var(--refused)", "var(--fg)"];
+  let paths = "", legend = "";
+  series.forEach((s, i) => {
+    paths += `<polyline fill="none" stroke="${palette[i % palette.length]}" stroke-width="1.6"
+      points="${s.pts.map(p => `${x(p[0])},${y(p[1])}`).join(" ")}"></polyline>`;
+    legend += `<tspan x="${left + 6}" dy="${i === 0 ? 0 : 12}" fill="${palette[i % palette.length]}">${s.key.replace("|", ", ").replace(/_/g, " ")}</tspan>`;
+  });
+  document.getElementById("gasChart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">
+      <line x1="${left}" y1="${H - bottom}" x2="${W - right}" y2="${H - bottom}" stroke="var(--line)"></line>
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${H - bottom}" stroke="var(--line)"></line>
+      <text x="${left - 6}" y="${top + 8}" text-anchor="end">${fmt(Math.round(maxY))}</text>
+      <text x="${left - 6}" y="${H - bottom}" text-anchor="end">0</text>
+      ${ns.map(n => `<text x="${x(n)}" y="${H - bottom + 14}" text-anchor="middle">${n}</text>`).join("")}
+      <text x="${(left + W) / 2}" y="${H - 4}" text-anchor="middle">N (registered delegates)</text>
+      ${paths}<text y="${top + 8}">${legend}</text>
+    </svg>`;
+}
+
+/* ---------- wiring ---------- */
+const tabs = document.getElementById("tabs");
+const panel = document.getElementById("panel");
+const acts = [1, 2, 3, 4, 5, 6];
+acts.forEach(a => {
+  const b = document.createElement("button");
+  b.className = "tab";
+  b.textContent = `${a}. ${ACTS[a].title}`;
+  b.setAttribute("role", "tab");
+  b.onclick = () => select(a);
+  tabs.appendChild(b);
+});
+
+function select(a) {
+  [...tabs.children].forEach((b, i) => b.setAttribute("aria-selected", acts[i] === a));
+  panel.innerHTML = a === 6 ? renderSweep() : renderAct(a);
+  if (a === 6) {
+    const ks = [...new Set(DATA.rho.map(r => +r.rho_num))].sort((x, y) => x - y);
+    const range = document.getElementById("rhoRange");
+    range.oninput = () => drawSweep(ks[+range.value]);
+    drawSweep(ks[+range.value]);
+  }
+}
+
+document.getElementById("provenance").textContent = DATA.meta.provenance;
+document.getElementById("footer").textContent = DATA.meta.footer;
+select(1);
+renderGas();
+</script>
+</body>
+</html>
