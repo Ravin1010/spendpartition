@@ -1,0 +1,6 @@
+out/
+cache/
+broadcast/
+results/*.csv
+results/*.png
+.DS_Store

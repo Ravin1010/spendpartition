@@ -1,0 +1,136 @@
+# SpendPartition — implementation skeleton
+
+One parameterised Solidity contract: a principal budget `B_G` per time window shared by `N`
+registered delegates. Delegate `i` holds a reservation `r_i`; `S = B_G - R` is a shared surplus;
+`rho = rhoNum / rhoDen` sets the split. `rho = 1` is a static partition, `rho = 0` a shared pool,
+`0 < rho < 1` a reserved pool.
+
+This tree covers the payment contract, the fixed-scenario and property tests, a rho sweep and a
+gas sweep. It is the feasibility spike attached to the BYOP approval request, not the full build;
+"Not implemented yet" at the bottom lists what the Layout v1.1 checklist still asks for.
+
+## Source of truth
+
+`docs/frozen/` holds the frozen documents; the code follows them and nothing else:
+
+| File | Role |
+|---|---|
+| `Spec_v1.1_errata_2026-08-08.md` | semantics (window, apportionment, debit rule, invariants I1–I5) |
+| `PropertyTestPlan_v1.1_2026-08-08.md` | test IDs T1–T18, hand-computed traces in Appendix A |
+| `StorageLayout_v1.1_2026-08-08.md` | packed slots, hot path, constructor bounds A1–A4, hypotheses H1–H7 |
+
+Changing behaviour means changing those documents first.
+
+## Toolchain
+
+Foundry 1.x (reference run: 1.8.3), solc 0.8.30, EVM version `prague`, optimizer on with 200 runs,
+`via_ir` off. Dependencies: `openzeppelin-contracts` v5.7.0, `forge-std` v1.16.2. Python 3 with
+`matplotlib` for the figure (the CSV is written without it).
+
+## Setup
+
+```bash
+cd ~/Projects/spendpartition
+git init -q                      # forge install needs a git repo; skip if one exists
+forge install foundry-rs/forge-std@v1.16.2 OpenZeppelin/openzeppelin-contracts@v5.7.0
+forge build
+```
+
+## Tests
+
+```bash
+forge test                       # whole suite
+forge test --match-contract ScenariosTest -vv
+```
+
+| File | Covers |
+|---|---|
+| `test/Scenarios.t.sol` | per-delegation caps exceeding the intended aggregate; a static split rejecting a request the aggregate could serve; shared-pool endpoints; T6, T7, T9, T12 (both cases), T13 (both appendix variants), T5/T11, T16, T17; constructor bounds; slot packing; G1/G2 storage-access counts |
+| `test/Fuzz.t.sol` | T8 apportionment via the characterising inequality (`R * rhoDen <= B_G * rhoNum < (R + 1) * rhoDen`), T18 debit-order transition |
+| `test/Invariant.t.sol` | I1, I3, I4, ghost agreement, the T2 probe (snapshot → real entry point → revert), and handler-side checks for T5, T16, T18, I2 across six configurations |
+| `test/RhoSweep.t.sol` | T14 measurement, writes `results/rho_sweep.csv` |
+
+Seeds and campaign sizes live in `foundry.toml`: fuzz seed `0x5eed`, fuzz runs 1000 (256 for T8),
+invariant runs 64 × depth 128, `fail_on_revert = false` (a rejected payment is a valid outcome).
+The invariant configurations are `(N, B_G, rho)` = (3, 100, 1/2), (5, 101, 1/4), (2, 1000, 0),
+(10, 2^64−1, 3/4), (3, 100, 1), (50, 1000, 1/3).
+
+`afterInvariant` appends one row per run to `results/invariant_coverage.csv` (accepted, accepted
+with spill into surplus, rejected, rollovers) so the campaign's coverage can be checked rather than
+assumed. Write the header first:
+
+```bash
+printf "n,budget,rho,accepted,accepted_with_spill,rejected,rollovers\n" > results/invariant_coverage.csv
+forge test --match-contract "Invariant_"
+```
+
+## Gas sweep
+
+```bash
+./run_gas_sweep.sh               # PORT=8546 ./run_gas_sweep.sh if 8545 is taken
+```
+
+Starts a local anvil (60 accounts from the default test mnemonic, `--hardfork prague`), broadcasts
+`script/GasSweep.s.sol`, then runs `analysis/gas_sweep.py`. Every deployment and every payment is
+its own transaction, so each one pays real EIP-2929 cold-access costs; `gasUsed` is read from the
+receipts in `broadcast/GasSweep.s.sol/31337/run-latest.json`.
+
+Sweep: `N ∈ {2, 5, 10, 20, 50}` × `rho ∈ {0, 1/2, 1}`, `B_G = 1e12` (1,000,000 USDC at 6 decimals),
+window 1 day, payments of 1e6 to a merchant whose token balance is made non-zero before the sweep.
+Per configuration: deploy, prefund, three payments by delegate `N-1`, one by delegate `0`.
+Payment paths are labelled from the `Paid` event's `fromSurplus` field, not from the configuration.
+
+Outputs: `results/gas_sweep.csv`, `results/gas_vs_N.png`, and a summary table on stdout.
+
+## Reference outputs
+
+`results/container_2026-09-22/` holds a full run (environment in `env.txt`): 29 tests passed,
+0 failed; the gas CSV, the rho sweep, the invariant coverage and the figure.
+
+Reproduction check — payment gas and deployment gas are fixed by the bytecode and the EVM rules,
+both pinned here, so a local run should match column for column:
+
+```bash
+cut -d, -f1-8 results/gas_sweep.csv > /tmp/mine.csv
+cut -d, -f1-8 results/container_2026-09-22/gas_sweep.csv > /tmp/ref.csv
+diff /tmp/mine.csv /tmp/ref.csv && echo "gas matches reference"
+diff results/rho_sweep.csv results/container_2026-09-22/rho_sweep.csv && echo "rho sweep matches reference"
+```
+
+`tx_hash` (column 9) is excluded because it depends on chain state, not on the contract. If payment
+gas matches but deployment gas is off by a few dozen, the likely cause is a different embedded
+metadata hash (different dependency revisions); check the `forge install` tags first. Invariant
+coverage counts are not part of the check: they depend on the fuzzer's RNG and will differ across
+Foundry versions.
+
+## Decisions this tree makes that the frozen documents do not specify
+
+- Delegate identity is `msg.sender`; there is no relayer or signature path. Any diagram with a
+  relayer in front of the contract contradicts the Layout v1.1 hot path.
+- ABI: `pay(address recipient, uint256 amount)`, views `currentWindowId`, `isAgent`, `indexOf`,
+  `reservationOf`, `spentOf`, `surplusUsed`, plus public immutables. Custom errors
+  `InvalidConfig`, `ZeroAddress`, `DuplicateAgent`, `InvalidAmount`, `NotAgent`, `SurplusExhausted`.
+- A `Paid(agent, recipient, amount, fromSurplus, windowId)` event. `AgentRegistered` is required by
+  Layout v1.1 (the optimised contract keeps no agent array); `Paid` is an addition — the dashboard
+  and the gas labelling both read it, and adding it after the benchmarks would move every number.
+- `ReentrancyGuardTransient` rather than the storage-slot guard, so the reentrancy guard does not
+  add a persistent slot to the per-payment storage accounting (H3). It needs `evm_version` at
+  cancun or later, which `prague` satisfies.
+- The per-delegation-cap baseline is modelled on the same code path as `rho = 1` with
+  `B_G = sum of the individual caps`; each delegate then has an independent counter and `S = 0`.
+
+## Not implemented yet
+
+From the Layout v1.1 Part 7 checklist: the Reference fixture and the differential harness; the three
+mutation checks; the adversarial token mock with a reentrant `transfer` hook; H1's three surplus
+`SSTORE` regimes measured separately (only first-ever and later-same-window appear here, not
+first-after-rollover); H4 hybrid spill-rate interpolation; H6 Optimized vs Reference; the batched
+vs unbatched appendix microbenchmark; the dashboard.
+
+## Failure modes seen so far
+
+- `forge install` fails outside a git repository → run `git init` first.
+- Port 8545 already in use → `PORT=8546 ./run_gas_sweep.sh`.
+- `matplotlib` missing → the CSV and the stdout table are still written, the figure is skipped.
+- `vm.writeFile` permission errors → `fs_permissions` in `foundry.toml` must keep `./results`
+  read-write.
