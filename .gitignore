@@ -4,3 +4,4 @@ broadcast/
 results/*.csv
 results/*.png
 .DS_Store
+docs/reference/
