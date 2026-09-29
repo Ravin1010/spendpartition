@@ -19,6 +19,17 @@ for _ in $(seq 1 50); do
 done
 cast chain-id --rpc-url "$RPC" >/dev/null
 
-forge script script/GasSweep.s.sol:GasSweep --rpc-url "$RPC" --broadcast --slow -q
+rm -rf broadcast/GasSweep.s.sol
+
+forge script script/GasSweep.s.sol:GasSweep --rpc-url "$RPC" --broadcast --slow -q --sig "run()"
+
+# Phase 3: the chain clock is advanced between calls, so each payment lands in its own
+# one-second window and the first write after a rollover is measured on real transactions.
+forge script script/GasSweep.s.sol:GasSweep --rpc-url "$RPC" --broadcast --slow -q --sig "rolloverDeploy()"
+for _ in 1 2 3 4; do
+  cast rpc evm_increaseTime 5 --rpc-url "$RPC" >/dev/null
+  cast rpc evm_mine --rpc-url "$RPC" >/dev/null
+  forge script script/GasSweep.s.sol:GasSweep --rpc-url "$RPC" --broadcast --slow -q --sig "rolloverPay()"
+done
 
 python3 analysis/gas_sweep.py

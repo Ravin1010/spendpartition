@@ -1,0 +1,31 @@
+series                                    N=2        N=5       N=10       N=20       N=50
+deploy (rho=0)                         800116     874990     999768    1249438    1998720
+deploy (rho=1)                         800128     875002     999780    1249450    1998732
+deploy (rho=1/2)                       800128     875002     999780    1249450    1998732
+reservation_only (rho=1)                47123      47123      47123      47123      47123
+reservation_only (rho=1/2)              47123      47123      47123      47123      47123
+surplus_first_ever (rho=0)              69737      69737      69737      69737      69737
+surplus_first_ever (rho=1/2)            69823          -      69823          -          -
+surplus_same_window (rho=0)             52637      52637      52637      52637      52637
+surplus_same_window (rho=1/2)           52637          -      52637          -          -
+deploy (rho=0): least-squares increment per registered delegate = 24,971.5 gas
+deploy (rho=1): least-squares increment per registered delegate = 24,971.5 gas
+deploy (rho=1/2): least-squares increment per registered delegate = 24,971.5 gas
+
+implementationpath                      agent slot                N=2        N=5       N=10       N=20       N=50
+optimized   reservation_only          same_window             47123      47123      47123      47123      47123
+optimized   surplus_first_ever        retag_new_window        69737          -      69737          -          -
+optimized   surplus_first_ever        same_window             69780      69737      69780      69737      69737
+optimized   surplus_first_in_window   retag_new_window        52637          -      52637          -          -
+optimized   surplus_same_window       same_window             52637      52637      52637      52637      52637
+reference   reservation_only          same_window             81935      85113      93972     118842     193452
+reference   surplus_first_ever        same_window            111024     118485     130920     155790     230400
+reference   surplus_same_window       same_window             77380      84285      96720     121590     196200
+
+deployment                      N=2        N=5       N=10       N=20       N=50
+optimized                    800128     875002     999780    1249450    1998732
+reference                    735201     811260     942013    1218543    2168269
+
+wrote results/gas_sweep.csv
+wrote results/gas_vs_N.png
+wrote results/gas_regimes.png

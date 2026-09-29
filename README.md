@@ -168,29 +168,66 @@ Starts a local anvil (60 accounts from the default test mnemonic, `--hardfork pr
 its own transaction, so each one pays real EIP-2929 cold-access costs; `gasUsed` is read from the
 receipts in `broadcast/GasSweep.s.sol/31337/run-latest.json`.
 
-Sweep: `N ∈ {2, 5, 10, 20, 50}` × `rho ∈ {0, 1/2, 1}`, `B_G = 1e12` (1,000,000 USDC at 6 decimals),
-window 1 day, payments of 1e6 to a merchant whose token balance is made non-zero before the sweep.
-Per configuration: deploy, prefund, three payments by delegate `N-1`, one by delegate `0`.
-Payment paths are labelled from the `Paid` event's `fromSurplus` field, not from the configuration.
+Four phases, all on the same chain:
 
-Outputs: `results/gas_sweep.csv`, `results/gas_vs_N.png`, and a summary table on stdout.
+1. `N ∈ {2, 5, 10, 20, 50}` × `rho ∈ {0, 1/2, 1}`, `B_G = 1e12` (1,000,000 USDC at 6 decimals),
+   window 1 day, payments of 1e6. Per configuration: deploy, prefund, three payments by delegate
+   `N-1`, one by delegate `0`.
+2. the same shape on `SpendPartitionReference`, which is what the packed layout is measured against.
+3. contracts with a one-second window, with the chain clock advanced between payments by the run
+   script, so each payment lands in a window of its own and the first write after a rollover is
+   measured on real transactions.
+4. a payment of exactly `r_i + 1`, which straddles the reservation boundary.
+
+The merchant's token balance is made non-zero before the sweep, so the recipient-side token write is
+the same kind in every payment. Payment paths are labelled from each receipt's `Paid` event
+(`fromSurplus` and `windowId`), not from the configuration:
+
+| label | meaning |
+|---|---|
+| `reservation_only` | `fromSurplus == 0` |
+| `surplus_first_ever` | the contract's first surplus write |
+| `surplus_first_in_window` | first surplus write of a window that already had one before |
+| `surplus_same_window` | a later surplus write inside the same window |
+| `same_window` / `retag_new_window` | whether the payer's slot already carries the current window id |
+
+Outputs: `results/gas_sweep.csv`, `results/gas_vs_N.png`, `results/gas_regimes.png`, and three
+tables on stdout. Measured on the reference run of 2026-09-30:
+
+| path | N=2 | N=10 | N=50 |
+|---|---|---|---|
+| optimized, reservation only | 47,123 | 47,123 | 47,123 |
+| optimized, surplus, first ever | 69,737 | 69,737 | 69,737 |
+| optimized, surplus, later in the same window | 52,637 | 52,637 | 52,637 |
+| optimized, surplus, first write of a new window | 52,637 | 52,637 | - |
+| reference, reservation only | 81,935 | 93,972 | 193,452 |
+| reference, surplus, later in the same window | 77,380 | 96,720 | 196,200 |
+
+The three surplus regimes differ only in the first one: a slot that has never been written costs
+about 17,100 more than one that has. A first write after a rollover costs the same as any later
+write in a window, because both overwrite a non-zero slot. Payment cost on the optimised contract
+does not move with N, while the reference grows with it; deployment is the other way round
+(735,201 against 800,128 at N=2, 2,168,269 against 1,998,732 at N=50).
 
 ## Reference outputs
 
-`results/container_2026-09-22/` holds a full run (environment in `env.txt`): 29 tests passed,
-0 failed; the gas CSV, the rho sweep, the invariant coverage and the figure.
+`results/container_2026-09-30/` holds a full run (environment in `env.txt`): 52 tests passed,
+0 failed; the gas CSV and its three stdout tables, the rho sweep, the invariant and differential
+coverage, and both figures. `results/container_2026-09-22/` is kept as the snapshot the proposal
+quotes; its gas CSV predates the reference and rollover phases and uses the earlier column set.
 
 Reproduction check — payment gas and deployment gas are fixed by the bytecode and the EVM rules,
 both pinned here, so a local run should match column for column:
 
 ```bash
-cut -d, -f1-8 results/gas_sweep.csv > /tmp/mine.csv
-cut -d, -f1-8 results/container_2026-09-22/gas_sweep.csv > /tmp/ref.csv
+cut -d, -f1-9,11-13 results/gas_sweep.csv > /tmp/mine.csv
+cut -d, -f1-9,11-13 results/container_2026-09-30/gas_sweep.csv > /tmp/ref.csv
 diff /tmp/mine.csv /tmp/ref.csv && echo "gas matches reference"
-diff results/rho_sweep.csv results/container_2026-09-22/rho_sweep.csv && echo "rho sweep matches reference"
+diff results/rho_sweep.csv results/container_2026-09-30/rho_sweep.csv && echo "rho sweep matches reference"
 ```
 
-`tx_hash` (column 9) is excluded because it depends on chain state, not on the contract. If payment
+`window_id` (column 10) and `tx_hash` (column 14) are excluded: both depend on when the run happened,
+not on the contract. If payment
 gas matches but deployment gas is off by a few dozen, the likely cause is a different embedded
 metadata hash (different dependency revisions); check the `forge install` tags first. Invariant
 coverage counts are not part of the check: they depend on the fuzzer's RNG and will differ across
@@ -214,10 +251,8 @@ Foundry versions.
 
 ## Not implemented yet
 
-From the Layout v1.1 Part 7 checklist: H1's three surplus
-`SSTORE` regimes measured separately (only first-ever and later-same-window appear here, not
-first-after-rollover); H4 hybrid spill-rate interpolation; H6 Optimized vs Reference; the batched
-vs unbatched appendix microbenchmark; the dashboard.
+From the Layout v1.1 Part 7 checklist: the batched vs unbatched appendix microbenchmark and the
+dashboard.
 
 ## Failure modes seen so far
 
