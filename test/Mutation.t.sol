@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {console} from "forge-std/console.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ISpendPartition} from "../src/ISpendPartition.sol";
@@ -9,6 +10,8 @@ import {SpendPartition} from "../src/SpendPartition.sol";
 import {MutantM1DebitOrder} from "./mutants/MutantM1DebitOrder.sol";
 import {MutantM2NoWindowTag} from "./mutants/MutantM2NoWindowTag.sol";
 import {MutantM3PartialFill} from "./mutants/MutantM3PartialFill.sol";
+import {MutantM4NoGuard} from "./mutants/MutantM4NoGuard.sol";
+import {ReentrantToken, ReentrantDelegate} from "./mocks/AdversarialTokens.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 
 /// Each mutant is the optimised contract with one behaviour changed (see the MUTATION comments in
@@ -21,13 +24,20 @@ contract MutationTest is Test {
 
     address internal constant MERCHANT = address(0xBEEF);
     uint256 internal constant WINDOW = 7 days;
-    uint256 internal constant N_VARIANTS = 4;
-    uint256 internal constant N_CHECKS = 5;
+    uint256 internal constant N_VARIANTS = 5;
+    uint256 internal constant N_CHECKS = 6;
+    bytes32 internal constant PAID_TOPIC = keccak256("Paid(address,address,uint256,uint256,uint48)");
 
     string[N_VARIANTS] internal variantName =
-        ["SpendPartition", "M1 debit order", "M2 no window tag", "M3 partial fill"];
-    string[N_CHECKS] internal checkName =
-        ["T6 apportionment", "T18 debit order", "T5/T9 window reset", "T12 ordering", "T16 atomicity"];
+        ["SpendPartition", "M1 debit order", "M2 no window tag", "M3 partial fill", "M4 no guard"];
+    string[N_CHECKS] internal checkName = [
+        "T6 apportionment",
+        "T18 debit order",
+        "T5/T9 window reset",
+        "T12 ordering",
+        "T16 atomicity",
+        "R1 one call one payment"
+    ];
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -42,23 +52,16 @@ contract MutationTest is Test {
             held[v][2] = _checkT5WindowReset(v);
             held[v][3] = _checkT12Ordering(v);
             held[v][4] = _checkT16Atomicity(v);
+            held[v][5] = _checkR1OneCallOnePayment(v);
         }
 
-        console.log("check                 SpendPartition  M1  M2  M3   (1 = property held)");
+        console.log("check                 SpendPartition  M1  M2  M3  M4   (1 = property held)");
         for (uint256 c = 0; c < N_CHECKS; ++c) {
-            console.log(
-                string.concat(
-                    _pad(checkName[c], 22),
-                    "      ",
-                    held[0][c] ? "1" : "0",
-                    "         ",
-                    held[1][c] ? "1" : "0",
-                    "   ",
-                    held[2][c] ? "1" : "0",
-                    "   ",
-                    held[3][c] ? "1" : "0"
-                )
-            );
+            string memory row = string.concat(_pad(checkName[c], 22), "      ", held[0][c] ? "1" : "0", "     ");
+            for (uint256 v = 1; v < N_VARIANTS; ++v) {
+                row = string.concat(row, "   ", held[v][c] ? "1" : "0");
+            }
+            console.log(row);
         }
 
         for (uint256 c = 0; c < N_CHECKS; ++c) {
@@ -158,6 +161,39 @@ contract MutationTest is Test {
         return true;
     }
 
+    /// R1: the delegate is a contract, and the token calls back into it while the transfer is in
+    /// flight, so the nested payment carries the delegate's own authority. One call to the entry
+    /// point must perform exactly one payment, and the value that leaves must equal the value
+    /// accounted for. The second half holds even without the guard, because effects are committed
+    /// before the interaction; the first half is what the guard buys.
+    function _checkR1OneCallOnePayment(uint256 v) internal returns (bool) {
+        ReentrantDelegate delegate = new ReentrantDelegate();
+        address[] memory ag = new address[](2);
+        ag[0] = address(delegate);
+        ag[1] = address(0xA001);
+
+        ReentrantToken token = new ReentrantToken();
+        ISpendPartition sp = _deployWith(IERC20(address(token)), v, ag, 100, 1, 2);
+        token.mint(address(sp), 100 * 64);
+        token.arm(address(delegate), abi.encodeCall(ReentrantDelegate.reenter, (sp, MERCHANT, 10)), false);
+
+        vm.recordLogs();
+        try delegate.payOnce(sp, MERCHANT, 20) {}
+        catch {
+            return false;
+        }
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256 payments;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].emitter == address(sp) && logs[i].topics[0] == PAID_TOPIC) ++payments;
+        }
+        if (!token.callbackRan()) return false;
+        if (payments != 1) return false;
+        if (token.balanceOf(MERCHANT) != sp.spentOf(address(delegate))) return false;
+        return true;
+    }
+
     // ---------------------------------------------------------------------
     // helpers
     // ---------------------------------------------------------------------
@@ -166,13 +202,20 @@ contract MutationTest is Test {
         internal
         returns (ISpendPartition)
     {
-        IERC20 t = IERC20(address(usdc));
+        return _deployWith(IERC20(address(usdc)), v, ag, budget, rhoNum, rhoDen);
+    }
+
+    function _deployWith(IERC20 t, uint256 v, address[] memory ag, uint256 budget, uint256 rhoNum, uint256 rhoDen)
+        internal
+        returns (ISpendPartition)
+    {
         address a;
         if (v == 0) a = address(new SpendPartition(t, ag, budget, rhoNum, rhoDen, WINDOW));
         else if (v == 1) a = address(new MutantM1DebitOrder(t, ag, budget, rhoNum, rhoDen, WINDOW));
         else if (v == 2) a = address(new MutantM2NoWindowTag(t, ag, budget, rhoNum, rhoDen, WINDOW));
-        else a = address(new MutantM3PartialFill(t, ag, budget, rhoNum, rhoDen, WINDOW));
-        usdc.mint(a, budget * 64);
+        else if (v == 3) a = address(new MutantM3PartialFill(t, ag, budget, rhoNum, rhoDen, WINDOW));
+        else a = address(new MutantM4NoGuard(t, ag, budget, rhoNum, rhoDen, WINDOW));
+        if (address(t) == address(usdc)) usdc.mint(a, budget * 64);
         return ISpendPartition(a);
     }
 

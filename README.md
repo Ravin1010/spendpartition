@@ -51,7 +51,8 @@ forge test --match-contract ScenariosTest -vv
 | `test/RhoSweep.t.sol` | T14 measurement, writes `results/rho_sweep.csv` |
 | `test/ReferenceAnchors.t.sol` | the Appendix A traces (T6, T7, T12, T13, T5/T11, T9, T17) replayed against `SpendPartitionReference` |
 | `test/Differential.t.sol` | both implementations driven through one call sequence and compared after every call, across five configurations |
-| `test/Mutation.t.sol` | the three mutants in `test/mutants/` run against the named checks, with the resulting kill matrix printed |
+| `test/Mutation.t.sol` | the four mutants in `test/mutants/` run against the named checks, with the resulting kill matrix printed |
+| `test/AdversarialToken.t.sol` | tokens that call back during the transfer, revert, or return false |
 
 Seeds and campaign sizes live in `foundry.toml`: fuzz seed `0x5eed`, fuzz runs 1000 (256 for T8),
 invariant runs 64 × depth 128, `fail_on_revert = false` (a rejected payment is a valid outcome).
@@ -107,6 +108,7 @@ configuration: in `SpendPartitionReference.pay`, replace the `fromReservation` l
 | `MutantM1DebitOrder` | the shared surplus is consumed before the delegate's own reservation |
 | `MutantM2NoWindowTag` | the window tag comparison is dropped on the payment path, so stored values are used as is |
 | `MutantM3PartialFill` | a payment that exceeds the remaining surplus is filled partially instead of refused |
+| `MutantM4NoGuard` | the reentrancy guard is removed from the payment path |
 
 ```bash
 forge test --match-contract MutationTest -vv
@@ -117,17 +119,43 @@ a failure is recorded rather than aborting the run. The test asserts that every 
 real contract and that no mutant survives all of them, and prints the matrix:
 
 ```
-check                 SpendPartition  M1  M2  M3   (1 = property held)
-T6 apportionment            1         1   1   0
-T18 debit order             1         0   1   1
-T5/T9 window reset          1         1   0   1
-T12 ordering                1         1   1   0
-T16 atomicity               1         1   1   0
+check                 SpendPartition  M1  M2  M3  M4   (1 = property held)
+T6 apportionment            1        1   1   0   1
+T18 debit order             1        0   1   1   1
+T5/T9 window reset          1        1   0   1   1
+T12 ordering                1        1   1   0   1
+T16 atomicity               1        1   1   0   1
+R1 one call one payment     1        1   1   1   0
 ```
 
-Each mutant is caught, and M1 and M2 are each caught by exactly one check: removing the T18 or the
-T5/T9 property would let that mutant through. To see how far a mutant is from the original,
-`diff src/SpendPartition.sol test/mutants/MutantM2NoWindowTag.sol`.
+Each mutant is caught, and M1, M2 and M4 are each caught by exactly one check: drop the T18, the
+T5/T9 or the R1 property and that mutant goes through the other 51 tests untouched. To see how far a
+mutant is from the original, `diff src/SpendPartition.sol test/mutants/MutantM2NoWindowTag.sol`.
+
+M4 took two attempts to catch, and the reason is worth recording. A token that calls `pay` on its own
+account is refused whatever the guard does, because it was never registered as a delegate; the
+attacker has to be a delegate that is itself a contract. Even then, the aggregate bound is not what
+breaks: effects are committed before the transfer, so a nested payment reads the already-updated
+spend and is accounted like any other, and per-window sum spend <= B_G still holds without the guard.
+What the guard buys is narrower and is what R1 states: one call to the entry point performs exactly
+one payment. Without it the same call emits two.
+
+## Adversarial tokens
+
+Layout v1.1 Part 5 assumes a standard token. `test/mocks/AdversarialTokens.sol` drops that
+assumption with three tokens and one hostile delegate:
+
+```bash
+forge test --match-contract AdversarialTokenTest -vv
+```
+
+| Case | Behaviour asserted |
+|---|---|
+| token re-enters `pay` during the transfer | the nested call reverts with `ReentrancyGuardReentrantCall`, whether it is bubbled or swallowed |
+| delegate is a contract and re-enters under its own authority | the nested call fails, exactly one `Paid` event is emitted, and the merchant balance equals the recorded spend |
+| a view is read during the callback | it returns the already-updated spend, so there is no window where value is moving but the accounting has not landed |
+| `transfer` reverts | the payment reverts and both raw storage slots are byte-identical to before |
+| `transfer` returns false | SafeERC20 raises `SafeERC20FailedOperation` and no state moves |
 
 ## Gas sweep
 
@@ -186,7 +214,7 @@ Foundry versions.
 
 ## Not implemented yet
 
-From the Layout v1.1 Part 7 checklist: the adversarial token mock with a reentrant `transfer` hook; H1's three surplus
+From the Layout v1.1 Part 7 checklist: H1's three surplus
 `SSTORE` regimes measured separately (only first-ever and later-same-window appear here, not
 first-after-rollover); H4 hybrid spill-rate interpolation; H6 Optimized vs Reference; the batched
 vs unbatched appendix microbenchmark; the dashboard.
