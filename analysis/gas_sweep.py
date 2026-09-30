@@ -270,7 +270,8 @@ def main() -> None:
     styles = [("o", "-"), ("s", "--"), ("^", ":"), ("D", "-.")]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3.8))
     deploy_keys = sorted(k for k in series if k[0] == "deploy")
-    for (marker, ls), key in zip(styles, deploy_keys):
+    for i, key in enumerate(deploy_keys):
+        marker, ls = styles[i % len(styles)]
         ax1.plot(ns, [statistics.median(series[key][n]) / 1e6 for n in ns], marker=marker, linestyle=ls,
                  markerfacecolor="none", label=f"rho={key[1]}")
     ax1.set_xlabel("N (registered delegates)")
@@ -278,15 +279,23 @@ def main() -> None:
     ax1.set_title("(a) Deployment")
     ax1.legend(frameon=False, fontsize=8)
 
-    pay_keys = sorted(k for k in series if k[0] != "deploy")
-    for (marker, ls), key in zip(styles, pay_keys):
-        xs = [n for n in ns if n in series[key]]
-        ax2.plot(xs, [statistics.median(series[key][n]) for n in xs], marker=marker, linestyle=ls,
-                 markerfacecolor="none", label=f"{key[0]}, rho={key[1]}")
+    # Payment cost depends on the path, not on rho, so panel (b) groups by path and takes the
+    # median across rho. Styles are cycled rather than zipped, so no series can be dropped
+    # silently when a new path label appears.
+    by_path = {}
+    for r in optimized:
+        if r["event"] == "pay":
+            by_path.setdefault(r["path"], {}).setdefault(r["n"], []).append(r["gas_used"])
+    for i, path in enumerate(sorted(by_path)):
+        marker, ls = styles[i % len(styles)]
+        xs = [n for n in ns if n in by_path[path]]
+        ax2.plot(xs, [statistics.median(by_path[path][n]) for n in xs], marker=marker, linestyle=ls,
+                 markerfacecolor="none", label=path.replace("_", " "))
     ax2.set_xlabel("N (registered delegates)")
     ax2.set_ylabel("gasUsed (receipt)")
     ax2.set_title("(b) Single payment")
     ax2.legend(frameon=False, fontsize=7)
+
     for ax in (ax1, ax2):
         ax.set_xticks(ns)
         ax.grid(True, linewidth=0.3)
