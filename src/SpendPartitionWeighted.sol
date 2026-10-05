@@ -151,9 +151,11 @@ contract SpendPartitionWeighted is ReentrancyGuardTransient {
 
         // Retag folded into the value write (Layout v1.1 Part 3, step 12).
         // Update only the packed first slot; the reservation slot is fixed after construction.
+        // Cast before either assignment so the optimizer can combine the packed-slot writes.
+        uint192 newSpent = SafeCast.toUint192(spentEff + amount);
         AgentSlot storage state = _agentState[msg.sender];
         state.windowId = w;
-        state.spent = SafeCast.toUint192(spentEff + amount);
+        state.spent = newSpent;
 
         emit Paid(msg.sender, recipient, amount, fromSurplus, w);
 
