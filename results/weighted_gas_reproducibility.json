@@ -1,0 +1,14 @@
+{
+  "rows_per_run": 225,
+  "configurations_per_run": 45,
+  "gas_used_and_observed_paths_identical": true,
+  "excluded_fields": [
+    "block_number",
+    "contract_address",
+    "tx_hash"
+  ],
+  "first_normalized_sha256": "9d2143fb97507b949744083d052bcfdea5b4d49bd8d57571e211b21743ddf327",
+  "second_normalized_sha256": "9d2143fb97507b949744083d052bcfdea5b4d49bd8d57571e211b21743ddf327",
+  "first_raw_csv_sha256": "36f0d74e83e2cfb2c0864710f8de2cae9ba518c7e02e1d5597faa350d4f1311d",
+  "second_raw_csv_sha256": "36f0d74e83e2cfb2c0864710f8de2cae9ba518c7e02e1d5597faa350d4f1311d"
+}
