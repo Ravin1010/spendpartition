@@ -44,7 +44,7 @@ struct AgentSlot {
 }
 ```
 
-Membership/index, window tag and spending occupy one packed storage slot; reservation occupies a second slot. The inherited budget bound makes `uint192` sufficient for a reservation. Weights and temporary apportionment arrays are not retained in optimized runtime storage. The additional slot buys direct lookup of each delegate's fixed protected capacity at the cost of more deployment storage and a larger payment constant.
+Membership/index, window tag and spending occupy one packed storage slot; reservation occupies a second slot. The preserved constructor budget bound makes `uint192` sufficient for a reservation. Weights and temporary apportionment arrays are not retained in optimized runtime storage. The additional slot buys direct lookup of each delegate's fixed protected capacity at the cost of more deployment storage and a larger payment constant.
 
 ### Payment and window behavior
 
@@ -56,7 +56,7 @@ During Iteration 1A, packed payment-state writes were coalesced by completing th
 
 ## 4. Independent reference implementation
 
-`SpendPartitionWeightedReference`, termed **weighted reference**, provides an independently structured verification fixture to reduce common-mode bugs during differential verification. Comparing two implementations is less informative if both reuse the same apportionment helper or state-transition code. The weighted reference neither inherits from nor calls the weighted optimized implementation and shares no weighted-allocation or state-transition helper with it. Audited arithmetic primitives are shared without duplicating unsafe arithmetic merely to create independence.
+`SpendPartitionWeightedReference`, termed **weighted reference**, provides an independently structured verification fixture to reduce common-mode bugs during differential verification. Comparing two implementations is less informative if both reuse the same apportionment helper or state-transition code. The weighted reference neither inherits from nor calls the weighted optimized implementation and shares no weighted-allocation or state-transition helper with it. OpenZeppelin `Math`/`SafeCast` primitives are shared without duplicating unsafe arithmetic merely to create independence.
 
 Its state uses plain delegate and reservation arrays, ordinary configuration storage, and spending mappings keyed by window and delegate. Membership/index lookup scans the delegate array linearly. Its Hamilton construction repeatedly selects the largest unawarded remainder, scanning in registration order and replacing the winner only for a strictly larger remainder. Each delegate can receive at most one leftover unit. This selection-style algorithm differs from optimized remainder-rank counting while implementing the same tie-break rule.
 
@@ -126,7 +126,7 @@ The accepted hypothesis verdicts are **SUPPORTED** for H1, faster weighted optim
 
 Precomputation moves apportionment cost to deployment and adds reservation storage. It preserves predictable delegate-count-independent payment work, but does not make large delegate sets cheap to deploy or establish feasibility at arbitrary `N`. Configuration immutability also excludes adaptive weights, delegate additions and protected-capacity redistribution within a deployed contract.
 
-Changing the participant set can alter existing Hamilton allocations even when a delegate's own weight is unchanged. Hamilton apportionment is known to have participant/population-style instability; participant-set stability is not guaranteed. [external citation to Hamilton/apportionment literature required during final report integration] This is distinct from the fixed-participant own-weight experiment in P6. Delegate/weight configuration is immutable after deployment, so such reconfiguration is outside current contract semantics.
+Changing the participant set can alter existing Hamilton allocations even when a delegate's own weight is unchanged. Hamilton apportionment is known to have participant/population-style instability; participant-set stability is not guaranteed. See Royce Crocker, *The House of Representatives Apportionment Formula: An Analysis of Proposals for Change and Their Impact on States*, Congressional Research Service, Report R41382, updated 6 August 2013, pp. 4–6, “Hamilton-Vinton: Ranking Fractional Remainders” ([Congress.gov PDF](https://www.congress.gov/crs_external_products/R/PDF/R41382/R41382.9.pdf); accessed 21 October 2026). This is distinct from the fixed-participant own-weight experiment in P6. Delegate/weight configuration is immutable after deployment, so such reconfiguration is outside current contract semantics.
 
 Gas conclusions are bounded to five `N` values, four deterministic positive-weight profiles, `rho=1/2`, one budget/window, payer `N−1`, one mock token environment, and local Prague/Anvil measurements. They do not establish gas behavior for zero weights, rho endpoints, other payer indices or token implementations. Two identical deterministic runs establish repeatability, not statistical confidence intervals. Curve fitting supports architectural expectations rather than proving complexity. Correctness campaigns cover broader cases, but remain bounded testing; P6 is empirical evidence and the weighted reference remains a verification fixture rather than a deployment optimization target.
 
